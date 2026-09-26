@@ -6,7 +6,7 @@ ENV BUNDLE_PATH=/usr/local/bundle \
 
 WORKDIR /echo
 
-COPY Gemfile Gemfile.lock .
+COPY Gemfile Gemfile.lock ./
 
 RUN bundle install
 

@@ -28,7 +28,15 @@ end
 
 begin
 	logger.info("Connecting to MQTT at #{CONFIG[:mqtt][:server]}")
-  MQTT::Client.connect(CONFIG[:mqtt][:server]) do |client|
+	
+	mqtt_options = {
+		host:     CONFIG[:mqtt][:server],
+		username: CONFIG[:mqtt][:username],
+		password: CONFIG[:mqtt][:password],
+	}
+	mqtt_options[:port] = CONFIG[:mqtt][:port] if CONFIG[:mqtt][:port]
+
+  MQTT::Client.connect(mqtt_options) do |client|
   	logger.info("Connected. Listening to topic #{CONFIG[:mqtt][:topic]}")
     
     client.get(CONFIG[:mqtt][:topic]) do |topic, message_str|
@@ -86,11 +94,15 @@ begin
 
     	logger.info "#{message.internal_id} File moved to Echo storage."
 
-			# delete export in frigate
+			# delete export in frigate — the clip is already safe in Echo storage,
+			# so a failure here (API change, Frigate restarting) is logged, not fatal
 
-			frigate.delete(id)
-
-			logger.info "#{message.internal_id} Export deleted from Frigate."
+			begin
+				frigate.delete(id)
+				logger.info "#{message.internal_id} Export deleted from Frigate."
+			rescue StandardError => e
+				logger.warn "#{message.internal_id} Could not delete export #{id} from Frigate (clip already archived): #{e.message.lines.first.to_s.strip}"
+			end
 
 			# trim exports folder
 
