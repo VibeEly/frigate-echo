@@ -76,15 +76,17 @@ class RemoteBackup
   def build_ssh_command
     parts = ['ssh', '-p', @port.to_s, '-o', 'BatchMode=yes']
 
-    parts += ['-i', @identity_file] if @identity_file
+    # Wrap paths in quotes to safely pass spaces to rsync's internal parser
+    parts += ['-i', "'#{@identity_file}'"] if @identity_file
 
     if @strict_host_key_checking
       parts += ['-o', 'StrictHostKeyChecking=yes']
-      parts += ['-o', "UserKnownHostsFile=#{@known_hosts_file}"] if @known_hosts_file
+      parts += ['-o', "'UserKnownHostsFile=#{@known_hosts_file}'"] if @known_hosts_file
     else
       parts += ['-o', 'StrictHostKeyChecking=no']
     end
 
-    Shellwords.join(parts)
+    # Use a standard space instead of Shellwords.join
+    parts.join(' ')
   end
 end
