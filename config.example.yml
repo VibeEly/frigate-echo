@@ -1,0 +1,22 @@
+retention_days: 7
+
+mqtt:
+  server: "192.168.0.10"
+  topic: "frigate/reviews"
+  username: ""
+  password: ""
+
+home_assistant:
+  url: "http://192.168.0.10:8123"
+  token: "<long-lived-access-token>"
+
+frigate:
+  url: "http://192.168.0.10:5000"
+  api_key: null
+
+remote_backup:
+  host: "backup.example.com"
+  user: "echo"
+  path: "/mnt/backups/frigate-echo"
+  identity_file: "/echo/config/id_rsync"
+  known_hosts_file: "/echo/config/known_hosts"
