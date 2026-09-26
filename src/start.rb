@@ -7,6 +7,7 @@ require_relative 'home_assistant'
 require_relative 'frigate'
 require_relative 'config'
 require_relative 'message'
+require_relative 'remote_backup'
 
 CONFIG = Config.load('config/config.yml')
 
@@ -24,19 +25,32 @@ else
 	home_assistant = nil
 end
 
+if CONFIG[:remote_backup]
+	rb_config = CONFIG[:remote_backup]
+	remote_backup = RemoteBackup.new(
+		host: rb_config[:host],
+		user: rb_config[:user],
+		path: rb_config[:path],
+		port: rb_config[:port] || 22,
+		identity_file: rb_config[:identity_file],
+		known_hosts_file: rb_config[:known_hosts_file],
+		strict_host_key_checking: rb_config.fetch(:strict_host_key_checking, true)
+	)
+	logger.info("Remote backup enabled: #{rb_config[:user]}@#{rb_config[:host]}:#{rb_config[:path]}")
+else
+	remote_backup = nil
+end
+
 # connect to MQTT
 
 begin
-	logger.info("Connecting to MQTT at #{CONFIG[:mqtt][:server]}")
-	
-	mqtt_options = {
-		host:     CONFIG[:mqtt][:server],
-		username: CONFIG[:mqtt][:username],
-		password: CONFIG[:mqtt][:password],
-	}
-	mqtt_options[:port] = CONFIG[:mqtt][:port] if CONFIG[:mqtt][:port]
+	# Testing, delete after:
+	logger.info("MQTT user: #{CONFIG[:mqtt][:username].inspect}, password present: #{!CONFIG[:mqtt][:password].to_s.empty?}")
 
-  MQTT::Client.connect(mqtt_options) do |client|
+	logger.info("Connecting to MQTT new at #{CONFIG[:mqtt][:server]}")
+	
+	# Added username and password fields for MQTT from new config.yml values
+  MQTT::Client.connect(host: CONFIG[:mqtt][:server], username:CONFIG[:mqtt][:username], password:CONFIG[:mqtt][:password], client_id:"figate-echo-018-fork") do |client|
   	logger.info("Connected. Listening to topic #{CONFIG[:mqtt][:topic]}")
     
     client.get(CONFIG[:mqtt][:topic]) do |topic, message_str|
@@ -90,9 +104,22 @@ begin
     	filename = m[:filename]
 
     	human_time = Time.at(start_time).localtime.strftime("%Y%m%d%H%M%S")
-    	`mv #{FRIGATE_EXPORTS}/#{filename} #{ECHO_STORAGE}/#{human_time}-#{filename}`
+    	stored_path = "#{ECHO_STORAGE}/#{human_time}-#{filename}"
+    	`mv #{FRIGATE_EXPORTS}/#{filename} #{stored_path}`
 
     	logger.info "#{message.internal_id} File moved to Echo storage."
+
+			# ship a copy offsite over rsync/SSH — this is a best-effort backup on
+			# top of Echo storage, so a failure here is logged, not fatal
+
+			if remote_backup
+				begin
+					remote_backup.upload(stored_path)
+					logger.info "#{message.internal_id} File backed up to remote server."
+				rescue StandardError => e
+					logger.warn "#{message.internal_id} Remote backup failed: #{e.message.lines.first.to_s.strip}"
+				end
+			end
 
 			# delete export in frigate — the clip is already safe in Echo storage,
 			# so a failure here (API change, Frigate restarting) is logged, not fatal

@@ -72,6 +72,15 @@ home_assistant:
 frigate:
   url: "http://192.168.0.10:5000"
   api_key: null
+
+remote_backup:
+  host: "backup.example.com"
+  user: "echo"
+  path: "/mnt/backups/frigate-echo"
+  port: 22
+  identity_file: "/echo/config/id_rsync"
+  known_hosts_file: "/echo/config/known_hosts"
+  strict_host_key_checking: true
 ```
 
 A few notes:
@@ -79,6 +88,15 @@ A few notes:
 * `home_assistant`: Optionally prevent exporting of alerts when home assistant shows that someone is home. The `token` sub-key can be generated from within the Home Assistant UI by clicking on your name in the lower left corner, selecting the security tab, and then scrolling to the "Long-lived access tokens" section. Otherwise, comment or remove this section.
 
 * `retention_days`: Optionally remove exports from the synced folder once they are the defined number of days old. Otherwise, comment or remove this key.
+
+* `remote_backup`: Optionally send a copy of every exported clip to a remote server over `rsync` (via SSH) as soon as it lands in Echo storage. This is an additional, offsite copy on top of whatever you point `echo_storage` at — it's best-effort, so if the remote server is unreachable the clip stays safely in local Echo storage and Echo just logs a warning and carries on. Comment out or remove this section to disable it.
+    * `host` / `user` / `path`: Where to send files — `path` is a directory on the remote host that the `user` account can write to.
+    * `port`: SSH port on the remote host (defaults to `22`).
+    * `identity_file`: Path to a private SSH key used to authenticate. **Only key-based auth is supported** — Echo runs rsync in SSH "batch mode," so a server that requires a password will simply fail the connection instead of hanging on a prompt. Generate a dedicated key pair for this (e.g. `ssh-keygen -t ed25519 -f id_rsync -N ""`), mount the private key into the container (alongside `config.yml` is fine), and add the public key to `~/.ssh/authorized_keys` for that user on the backup server. Keep the private key's permissions restrictive (`chmod 600`).
+    * `known_hosts_file`: Optional path to a `known_hosts` file containing the backup server's host key. If omitted, the default SSH known_hosts lookup is used. Either way, the host must already be known/trusted before the first backup — SSH into the backup server manually once (or run `ssh-keyscan` into a known_hosts file) so its key gets recorded; this prevents Echo from silently talking to an impostor server.
+    * `strict_host_key_checking`: Defaults to `true` and should normally be left alone; it's what makes the `known_hosts` check above actually enforced. Only set to `false` if you understand and accept the risk of skipping host verification.
+
+    The Docker image includes `rsync` and an SSH client already, so no additional setup is needed inside the container beyond mounting your key and (optionally) a known_hosts file.
 
 #### Starting it up
 
