@@ -13,6 +13,7 @@ CONFIG = Config.load('config/config.yml')
 
 FRIGATE_EXPORTS = '/mnt/frigate_exports'
 ECHO_STORAGE    = '/mnt/echo_storage'
+REMOTE_PRUNE_INTERVAL = 24 * 60 * 60 # only prune the remote backup once per day
 
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
@@ -40,6 +41,8 @@ if CONFIG[:remote_backup]
 else
 	remote_backup = nil
 end
+
+last_remote_prune_at = nil
 
 # connect to MQTT
 
@@ -86,22 +89,30 @@ begin
 
     	logger.info "#{message.internal_id}Frigate export id: #{id}"
 
-    	first_part, last_part = id.split("_")
-    	last_size = "-1"
+    	# Frigate names the export file after its own export id (e.g. "<id>.mp4"),
+    	# so we can wait for that exact file instead of pattern-matching the
+    	# whole exports folder — which was the source of the old-video bug:
+    	# `id.split("_")` only gives the first two segments (not the true
+    	# first/last), so for a camera name containing an underscore (e.g.
+    	# "front_door") the old regex degraded into "front.+door", matching
+    	# ANY export for that camera — including a stale leftover one — rather
+    	# than the export that was just created.
+    	filename = "#{id}.mp4"
+    	filepath = File.join(FRIGATE_EXPORTS, filename)
+    	last_size = -1
 
-    	begin    	
-    		if m = `ls -s #{FRIGATE_EXPORTS}`.match(/\n\s*(?<size>\d+) (?<filename>#{first_part}.+#{last_part}[^\n]+)/) 
-    			break if m[:size] == last_size
+    	begin
+    		if File.exist?(filepath)
+    			current_size = File.size(filepath)
+    			break if current_size == last_size
 
-    			last_size = m[:size]
+    			last_size = current_size
     		end
-	
+
   			sleep 1
     	end while true
 
 			logger.info "#{message.internal_id} Frigate export complete."
-
-    	filename = m[:filename]
 
     	human_time = Time.at(start_time).localtime.strftime("%Y%m%d%H%M%S")
     	stored_path = "#{ECHO_STORAGE}/#{human_time}-#{filename}"
@@ -136,6 +147,22 @@ begin
 			if CONFIG[:retention_days]
 				logger.info "Removing expired data from Echo storage."
 				`find #{ECHO_STORAGE} -type f -mtime +#{CONFIG[:retention_days]} -delete`
+
+				# trim the remote backup directory too, but at most once per
+				# day
+				# best-effort, so a failure here is logged, not fatal. The
+				# timestamp is updated whether or not the prune succeeds, so a
+				# failing remote host doesn't get hammered every alert either.
+				if remote_backup && (last_remote_prune_at.nil? || Time.now - last_remote_prune_at >= REMOTE_PRUNE_INTERVAL)
+					last_remote_prune_at = Time.now
+
+					begin
+						remote_backup.prune(CONFIG[:retention_days])
+						logger.info "Removed expired data from remote backup."
+					rescue StandardError => e
+						logger.warn "Could not prune remote backup: #{e.message.lines.first.to_s.strip}"
+					end
+				end
 			end
     end
   end

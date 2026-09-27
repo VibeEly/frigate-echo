@@ -62,10 +62,51 @@ class RemoteBackup
     true
   end
 
+  # Deletes files older than `retention_days` from the remote backup
+  # directory, mirroring the local Echo storage cleanup in start.rb.
+  # Returns true on success, raises RemoteBackup::Error on failure.
+  def prune(retention_days)
+    days = Integer(retention_days)
+    remote_dir = ensure_trailing_slash(@path).chomp('/')
+
+    # This string is executed by the *remote* shell (ssh concatenates
+    # trailing argv elements and hands them to the remote user's shell),
+    # so the path is Shellwords-escaped here — unlike ssh_argv itself,
+    # which is passed straight to Open3 with no shell involved.
+    remote_find_cmd = "find #{Shellwords.escape(remote_dir)} -type f -mtime +#{days} -delete"
+
+    cmd = ssh_argv + ["#{@user}@#{@host}", remote_find_cmd]
+
+    stdout, stderr, status = Open3.capture3(*cmd)
+
+    unless status.success?
+      raise Error, "remote prune exited with #{status.exitstatus}: #{stderr.strip.empty? ? stdout.strip : stderr.strip}"
+    end
+
+    true
+  end
+
   private
 
   def ensure_trailing_slash(path)
     path.end_with?('/') ? path : "#{path}/"
+  end
+
+  # Builds argv for invoking `ssh` directly via Open3 (no shell in between),
+  # so no quoting/escaping of these elements is needed or wanted.
+  def ssh_argv
+    argv = ['ssh', '-p', @port.to_s, '-o', 'BatchMode=yes']
+
+    argv += ['-i', @identity_file] if @identity_file
+
+    if @strict_host_key_checking
+      argv += ['-o', 'StrictHostKeyChecking=yes']
+      argv += ['-o', "UserKnownHostsFile=#{@known_hosts_file}"] if @known_hosts_file
+    else
+      argv += ['-o', 'StrictHostKeyChecking=no']
+    end
+
+    argv
   end
 
   # Builds the string passed to rsync's `-e` flag. rsync itself hands this
