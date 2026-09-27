@@ -1,0 +1,11 @@
+services:
+  frigate-echo:
+    image: frigate-echo:latest
+    restart: unless-stopped
+    container_name: frigate-echo
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - /local/data/echo:/echo/config
+      - /local/data/frigate/video/exports:/mnt/frigate_exports
+      - /local/data/echo-exports-backup:/mnt/echo_storage
