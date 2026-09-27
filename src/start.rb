@@ -16,7 +16,8 @@ CONFIG = Config.load('config/config.yml')
 FRIGATE_EXPORTS = '/mnt/frigate_exports'
 ECHO_STORAGE    = '/mnt/echo_storage'
 REMOTE_PRUNE_INTERVAL = 24 * 60 * 60 # only prune the remote backup once per day
-EXPORT_WAIT_TIMEOUT   = 10 * 60      # give up waiting on a Frigate export after 10 minutes
+EXPORT_WAIT_TIMEOUT   = 2 * 60      # give up waiting on a Frigate export after 2 minutes
+EXPORT_METADATA_WAIT_TIMEOUT = 30    # give up waiting on Frigate to report a video_path after 30 seconds
 
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
@@ -62,9 +63,26 @@ end
 
 last_remote_prune_at = nil
 
+# Get Frigate video path via GET /api/exports/:id
+# Poll until it reports a video_path. Set by EXPORT_METADATA_WAIT_TIMEOUT 
+def wait_for_video_path(frigate, id, timeout:, logger:, internal_id:)
+	deadline = Time.now + timeout
+
+	loop do
+		export = frigate.get(id)
+		return export['video_path'] if export && export['video_path']
+
+		if Time.now > deadline
+			logger.warn("#{internal_id} Timed out waiting for Frigate to report a video_path for export #{id}")
+			return nil
+		end
+
+		sleep 1
+	end
+end
+
 # Waits for Frigate to finish writing the export file, by polling its size
-# until it stops changing. Bounded by EXPORT_WAIT_TIMEOUT so a stalled or
-# failed export can't wedge the process forever.
+# until it stops changing. Set by EXPORT_WAIT_TIMEOUT 
 def wait_for_export(filepath, timeout:, logger:, internal_id:)
 	last_size = -1
 	deadline = Time.now + timeout
@@ -106,13 +124,12 @@ begin
 			begin
 				message = Message.new(message_str)
 
-				# is it a concluded alert message?
+				# Is it a concluded alert message?
 				next unless message.end_alert?
 
 				logger.info("#{message.internal_id} Alert received on camera \"#{message.camera_name}\"")
 
-				# is anyone home?
-
+				# Is anyone home?
 				if home_assistant
 					people_home = home_assistant.people_home
 					unless people_home.empty?
@@ -121,24 +138,28 @@ begin
 					end
 				end
 
-				# export the video
-
+				# Export the video
 				buffer      = 5
 				start_time  = message.start_time - buffer
 				end_time    = message.end_time   + buffer
 
 				res = frigate.create(message.camera_name, start_time, end_time)
 
-				# move the file
-
+				# Move the file
 				id = res['export_id']
 
 				logger.info "#{message.internal_id} Frigate export id: #{id}"
 
-				# Frigate names the export file after its own export id (e.g. "<id>.mp4"),
-				# so we can wait for that exact file instead of pattern-matching the
-				# whole exports folder.
-				filename = "#{id}.mp4"
+				# Ask Frigate for the export's real filename rather than guessing
+				# it from the id — see wait_for_video_path.
+				video_path = wait_for_video_path(frigate, id, timeout: EXPORT_METADATA_WAIT_TIMEOUT, logger: logger, internal_id: message.internal_id)
+
+				if video_path.nil?
+					logger.warn("#{message.internal_id} Skipping this alert; no video_path reported for export #{id}.")
+					next
+				end
+
+				filename = File.basename(video_path)
 				filepath = File.join(FRIGATE_EXPORTS, filename)
 
 				unless wait_for_export(filepath, timeout: EXPORT_WAIT_TIMEOUT, logger: logger, internal_id: message.internal_id)
@@ -151,17 +172,12 @@ begin
 				human_time = Time.at(start_time).localtime.strftime("%Y%m%d%H%M%S")
 				stored_path = File.join(ECHO_STORAGE, "#{human_time}-#{filename}")
 
-				# FileUtils.mv instead of a shelled-out `mv` string: this avoids
-				# passing filenames through a shell entirely (so nothing in a
-				# Frigate-provided export id can be interpreted as shell syntax),
-				# and it raises on failure instead of silently doing nothing.
+				# Copy to local echo storage
 				FileUtils.mv(filepath, stored_path)
 
 				logger.info "#{message.internal_id} File moved to Echo storage."
 
-				# ship a copy offsite over rsync/SSH — this is a best-effort backup on
-				# top of Echo storage, so a failure here is logged, not fatal
-
+				# Ship a copy offsite over rsync/SSH 
 				if remote_backup
 					begin
 						remote_backup.upload(stored_path)
@@ -171,9 +187,7 @@ begin
 					end
 				end
 
-				# delete export in frigate — the clip is already safe in Echo storage,
-				# so a failure here (API change, Frigate restarting) is logged, not fatal
-
+				# Delete export in Frigate after clip is already in Echo storage,
 				begin
 					frigate.delete(id)
 					logger.info "#{message.internal_id} Export deleted from Frigate."
@@ -181,8 +195,7 @@ begin
 					logger.warn "#{message.internal_id} Could not delete export #{id} from Frigate (clip already archived): #{e.message.lines.first.to_s.strip}"
 				end
 
-				# trim exports folder
-
+				# Trim exports folder
 				if CONFIG[:retention_days]
 					logger.info "Removing expired data from Echo storage."
 
@@ -192,10 +205,8 @@ begin
 						File.delete(path) if File.mtime(path) < cutoff
 					end
 
-					# trim the remote backup directory too, but at most once per
-					# day. Best-effort, so a failure here is logged, not fatal. The
-					# timestamp is updated whether or not the prune succeeds, so a
-					# failing remote host doesn't get hammered every alert either.
+					# Trim the remote backup directory  
+					# The timestamp is updated whether or not the prune succeeds 
 					if remote_backup && (last_remote_prune_at.nil? || Time.now - last_remote_prune_at >= REMOTE_PRUNE_INTERVAL)
 						last_remote_prune_at = Time.now
 
@@ -210,9 +221,7 @@ begin
 			rescue Message::ParseError => e
 				logger.warn("Skipping unparseable MQTT message: #{e.message}")
 			rescue StandardError => e
-				# A single bad alert (Frigate API hiccup, unexpected payload shape,
-				# etc.) should never take down the whole listener — log it and keep
-				# processing subsequent MQTT messages.
+				# Log Errors and keep processing subsequent MQTT messages.
 				logger.error("Error while processing alert: #{e.class}: #{e.message}")
 				logger.error(e.backtrace.first(5).join("\n")) if e.backtrace
 			end

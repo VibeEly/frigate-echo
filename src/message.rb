@@ -7,9 +7,6 @@ class Message
   def initialize(json_string)
     @json = JSON.parse(json_string)
   rescue JSON::ParserError => e
-    # A single malformed MQTT payload shouldn't be able to crash the
-    # listener — wrap it in our own error type so callers can rescue it
-    # specifically and move on to the next message.
     raise ParseError, "invalid message JSON: #{e.message}"
   end
 

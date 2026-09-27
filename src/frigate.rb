@@ -8,6 +8,14 @@ class FrigateExport
 		@api_key = api_key
 	end
 
+	# Returns the export record for a single export
+	def get(id)
+		res = request_raw("/api/exports/#{escape_path_segment(id)}", :get)
+		return nil if res.kind_of?(Net::HTTPNotFound)
+		raise_unless_success(res)
+		parse_json(res.body)
+	end
+
 	def list
 		res = request("/api/exports", :get)
 
@@ -45,12 +53,7 @@ class FrigateExport
 
 	private
 
-	# Percent-encodes a value for use as a single URL path segment. Camera
-	# names come from Frigate's own MQTT payload and are normally simple
-	# identifiers, but escaping defensively here means a name containing
-	# "/", "?", or spaces can't be misread as a different API path.
-	# (Deliberately not URI.encode_www_form_component, which encodes spaces
-	# as "+" — correct for query strings, not for a path segment.)
+	# Percent-encodes a value for use as a single URL path segment. 
 	def escape_path_segment(value)
 		URI::DEFAULT_PARSER.escape(value.to_s, /[^a-zA-Z0-9\-_.]/)
 	end
@@ -73,7 +76,7 @@ class FrigateExport
 		end
 	end
 
-	# perform the request and return the response without raising
+	# Perform the request and return the response without raising
 	def request_raw(uri, method, body = nil)
 		url = URI("#{@url}#{uri}")
 
