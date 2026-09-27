@@ -11,9 +11,13 @@ require 'shellwords'
 #   be present in a known_hosts file (either the default one, or the one
 #   given via `known_hosts_file`). This protects against MITM/spoofed hosts.
 #   Only disable this if you fully understand the risk.
-# * All command arguments are passed as array elements (never interpolated
-#   into a shell string) so nothing in a filename or config value can be
-#   used to inject extra shell commands.
+# * All command arguments passed to Open3 are given as array elements (never
+#   interpolated into a shell string), so nothing in a filename or config
+#   value can be used to inject extra shell commands into *our own* process.
+# * The one place a shell string genuinely has to be built — rsync's `-e`
+#   flag, which rsync itself hands to a shell to launch ssh — is assembled
+#   with Shellwords so that a value such as an identity_file path containing
+#   a space or a quote can't break out of it.
 class RemoteBackup
   class Error < StandardError; end
 
@@ -110,24 +114,19 @@ class RemoteBackup
   end
 
   # Builds the string passed to rsync's `-e` flag. rsync itself hands this
-  # string to a shell, so it is assembled with Shellwords from
-  # config-supplied values (the same trust level as the API keys/tokens
-  # already stored in config.yml) rather than from anything remote or
-  # user-uploaded.
+  # string to a shell, so — unlike ssh_argv above — every element needs
+  # proper shell quoting. Reusing ssh_argv and joining it with Shellwords
+  # guarantees the two commands never drift apart and that a value
+  # containing a space or a single quote (e.g. an oddly-named
+  # known_hosts_file path) can't break out of the string or inject
+  # additional shell commands.
+  #
+  # NOTE: the previous implementation built this string by hand-wrapping
+  # values in single quotes (e.g. "'#{@identity_file}'") instead of using
+  # Shellwords. That does not escape single quotes *inside* the value, so a
+  # path containing one could break out of the quoting and inject arbitrary
+  # shell commands into the `-e` string that rsync executes.
   def build_ssh_command
-    parts = ['ssh', '-p', @port.to_s, '-o', 'BatchMode=yes']
-
-    # Wrap paths in quotes to safely pass spaces to rsync's internal parser
-    parts += ['-i', "'#{@identity_file}'"] if @identity_file
-
-    if @strict_host_key_checking
-      parts += ['-o', 'StrictHostKeyChecking=yes']
-      parts += ['-o', "'UserKnownHostsFile=#{@known_hosts_file}'"] if @known_hosts_file
-    else
-      parts += ['-o', 'StrictHostKeyChecking=no']
-    end
-
-    # Use a standard space instead of Shellwords.join
-    parts.join(' ')
+    Shellwords.join(ssh_argv)
   end
 end

@@ -1,6 +1,6 @@
-require 'net/http'
 require 'json'
 require 'uri'
+require_relative 'http_client'
 
 class HomeAssistant
 	def initialize(url, token)
@@ -21,13 +21,15 @@ class HomeAssistant
 	  req['Authorization'] = "Bearer #{@token}"
 	  req['Content-Type'] = 'application/json'
 
-	  res = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(req) }
+	  res = HttpClient.perform(uri, req)
 
 	  unless res.is_a?(Net::HTTPSuccess)
-	    raise "Error: #{res.class} #{res.code} #{res.message} #{res.body}"
+	    raise "Home Assistant error: #{res.code} #{res.message} #{res.body}"
 	  end
 
 	  states = JSON.parse(res.body)
 		states.select { |entity| entity['entity_id'].start_with?('person.') }
+	rescue JSON::ParserError => e
+	  raise "Home Assistant returned invalid JSON: #{e.message}"
 	end
 end

@@ -1,6 +1,6 @@
-require 'net/http'
 require 'json'
 require 'uri'
+require_relative 'http_client'
 
 class FrigateExport
 	def initialize(url, api_key)
@@ -11,7 +11,7 @@ class FrigateExport
 	def list
 		res = request("/api/exports", :get)
 
-		exports = JSON.parse(res.body)
+		exports = parse_json(res.body)
 		exports.sort_by { |e| e['date'] }
 	end
 
@@ -32,16 +32,34 @@ class FrigateExport
 			source: 'recordings'
 		}
 
-		res = request("/api/export/#{camera}/start/#{start_time}/end/#{end_time}", :post, body)
+		res = request("/api/export/#{escape_path_segment(camera)}/start/#{start_time.to_i}/end/#{end_time.to_i}", :post, body)
 
-		unless [Net::HTTPSuccess, Net::HTTPCreated].any? { |i| res.kind_of?(i) }
-			raise "Error: #{res.code} #{res.message}\nBody: #{res.body}"
+		parsed = parse_json(res.body)
+
+		unless parsed['export_id']
+			raise "Frigate export response did not include an export_id. Body: #{res.body}"
 		end
 
-		JSON.parse(res.body)
+		parsed
 	end
 
 	private
+
+	# Percent-encodes a value for use as a single URL path segment. Camera
+	# names come from Frigate's own MQTT payload and are normally simple
+	# identifiers, but escaping defensively here means a name containing
+	# "/", "?", or spaces can't be misread as a different API path.
+	# (Deliberately not URI.encode_www_form_component, which encodes spaces
+	# as "+" — correct for query strings, not for a path segment.)
+	def escape_path_segment(value)
+		URI::DEFAULT_PARSER.escape(value.to_s, /[^a-zA-Z0-9\-_.]/)
+	end
+
+	def parse_json(body)
+		JSON.parse(body)
+	rescue JSON::ParserError => e
+		raise "Frigate returned invalid JSON: #{e.message}"
+	end
 
 	def request(uri, method, body = nil)
 		res = request_raw(uri, method, body)
@@ -51,14 +69,14 @@ class FrigateExport
 
 	def raise_unless_success(res)
 		unless res.kind_of?(Net::HTTPSuccess)
-			raise "Error: #{res.code} #{res.message}\nBody: #{res.body}"
+			raise "Frigate error: #{res.code} #{res.message}\nBody: #{res.body}"
 		end
 	end
 
 	# perform the request and return the response without raising
 	def request_raw(uri, method, body = nil)
 		url = URI("#{@url}#{uri}")
-		
+
 		req = case method
 		when :get
 			Net::HTTP::Get.new(url)
@@ -77,6 +95,6 @@ class FrigateExport
 			req.body = JSON.dump(body)
 		end
 
-		Net::HTTP.start(url.hostname, url.port) { |http| http.request(req) }
+		HttpClient.perform(url, req)
 	end
 end
