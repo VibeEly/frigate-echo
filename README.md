@@ -98,7 +98,7 @@ A few notes:
 * `frigate`: Echo needs Frigate 0.15 or newer (older versions do not return an export id) and is written against the 0.18 API.
     * Port `5000` is Frigate's internal, unauthenticated port. Leave `user`, `password` and `api_key` unset and keep that port reachable only from trusted networks.
     * Port `8971` is the authenticated port. Create a user in Frigate (Settings > Users) and set `user` and `password`. Echo logs in, keeps the token and logs in again when it expires. Frigate serves a self-signed certificate on this port by default, so set `verify_ssl: false` unless you have installed a real certificate.
-    * Frigate has no static API keys. `api_key` accepts a login token you obtained yourself, but it expires (after 24 hours by default), so prefer `user` and `password`.
+    * `api_key` : Frigate API key.
 
 * `retention_days`: Optionally remove exports from the synced folder once they are the defined number of days old (whole days, at least 1). 
 
