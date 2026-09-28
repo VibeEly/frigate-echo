@@ -2,16 +2,15 @@ require 'open3'
 require 'shellwords'
 
 
-# * Only key-based SSH auth is supported (no password prompts) 
-# * Host key checking defaults to "yes", meaning the remote host must already
-#   be present in a known_hosts file (either the default one, or the one
-#   given via `known_hosts_file`). This protects against MITM/spoofed hosts.
+# * Only key-based SSH auth is supported (no password prompts)
+# * Host key checking defaults to "yes". The remote host must be present 
+#   in a known_hosts file (default one, or given via known_hosts_file)
 class RemoteBackup
   class Error < StandardError; end
 
   def initialize(host:, user:, path:, port: 22, identity_file: nil,
                  known_hosts_file: nil, strict_host_key_checking: true,
-                 rsync_bin: 'rsync')
+                 rsync_bin: 'rsync', bandwidth_limit: 0)
     raise ArgumentError, 'host is required'  if host.to_s.empty?
     raise ArgumentError, 'user is required'  if user.to_s.empty?
     raise ArgumentError, 'path is required'  if path.to_s.empty?
@@ -24,10 +23,10 @@ class RemoteBackup
     @known_hosts_file = known_hosts_file
     @strict_host_key_checking = strict_host_key_checking
     @rsync_bin = rsync_bin
+    @bandwidth_limit = bandwidth_limit
   end
 
   # Uploads a single local file to the configured remote directory.
-  # Returns true on success, raises RemoteBackup::Error on failure.
   def upload(local_path)
     unless File.file?(local_path)
       raise Error, "Local file not found: #{local_path}"
@@ -40,6 +39,7 @@ class RemoteBackup
       '-az',            # archive mode + compression
       '--partial',      # keep partially transferred files so retries can resume
       '--timeout=60',
+      "--bwlimit=#{@bandwidth_limit}", # limit bandwidth in KB/s, default unlimited 0
       '-e', build_ssh_command,
       local_path,
       remote_target
@@ -54,7 +54,7 @@ class RemoteBackup
     true
   end
 
-  # Deletes files older than `retention_days` from the remote backup
+  # Deletes files older than retention_days from the remote backup
   def prune(retention_days)
     days = Integer(retention_days)
     remote_dir = ensure_trailing_slash(@path).chomp('/')
@@ -79,7 +79,7 @@ class RemoteBackup
     path.end_with?('/') ? path : "#{path}/"
   end
 
-  # Builds argv for invoking `ssh` directly via Open3 
+  # Builds argv for invoking ssh directly via Open3 
   def ssh_argv
     argv = ['ssh', '-p', @port.to_s, '-o', 'BatchMode=yes']
 
@@ -95,7 +95,7 @@ class RemoteBackup
     argv
   end
 
-  # Builds the string passed to rsync's `-e` flag. 
+  # Builds the string passed to rsync's `e flag. 
   def build_ssh_command
     ssh_argv.map { |arg| rsync_rsh_quote(arg) }.join(' ')
   end
