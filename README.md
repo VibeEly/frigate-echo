@@ -66,13 +66,13 @@ mqtt:
   server: "192.168.0.10"
   topic: "frigate/reviews"
 
-home_assistant:
-  url: "http://192.168.0.10:8123"
-  token: "<long-lived-access-token>"
-
 frigate:
   url: "http://192.168.0.10:5000"
   api_key: null
+
+home_assistant:
+  url: "http://192.168.0.10:8123"
+  token: "<long-lived-access-token>"
 
 remote_backup:
   host: "backup.example.com"
