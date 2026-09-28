@@ -36,7 +36,7 @@ class RemoteBackup
 
     cmd = [
       @rsync_bin,
-      '-az',            # archive mode + compression
+      '-a',            # archive mode
       '--partial',      # keep partially transferred files so retries can resume
       '--timeout=60',
       "--bwlimit=#{@bandwidth_limit}", # limit bandwidth in KB/s, default unlimited 0
