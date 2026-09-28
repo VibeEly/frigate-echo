@@ -102,8 +102,7 @@ class RemoteBackup
 
   # Quotes a single argument for rsync's --rsh splitter. Anything containing
   # whitespace, a single quote, a double quote, or a backslash is wrapped in
-  # single quotes, with embedded single quotes escaped as '\'' so they
-  # can't break out of the quoting.
+  # single quotes, with embedded single quotes escaped as '\''
   def rsync_rsh_quote(arg)
     return arg if arg =~ /\A[^\s'"\\]+\z/
 

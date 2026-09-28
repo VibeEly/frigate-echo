@@ -22,8 +22,7 @@ EXPORT_METADATA_WAIT_TIMEOUT = 30    # give up waiting on Frigate to report a vi
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
 
-# Fail fast with a clear message instead of a NoMethodError deep in a class
-# if required config is missing.
+# Check config for required values
 def require_config!(config, *keys)
   keys.each do |key|
     if config[key].nil? || config[key].to_s.empty?
@@ -150,8 +149,7 @@ begin
 
 				logger.info "#{message.internal_id} Frigate export id: #{id}"
 
-				# Ask Frigate for the export's real filename rather than guessing
-				# it from the id — see wait_for_video_path.
+				# Ask Frigate for the export's filename 
 				video_path = wait_for_video_path(frigate, id, timeout: EXPORT_METADATA_WAIT_TIMEOUT, logger: logger, internal_id: message.internal_id)
 
 				if video_path.nil?
@@ -205,8 +203,7 @@ begin
 						File.delete(path) if File.mtime(path) < cutoff
 					end
 
-					# Trim the remote backup directory  
-					# The timestamp is updated whether or not the prune succeeds 
+					# Trim the remote backup directory files
 					if remote_backup && (last_remote_prune_at.nil? || Time.now - last_remote_prune_at >= REMOTE_PRUNE_INTERVAL)
 						last_remote_prune_at = Time.now
 
