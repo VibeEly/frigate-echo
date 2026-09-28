@@ -10,9 +10,14 @@ class Message
     raise ParseError, "invalid message JSON: #{e.message}"
   end
 
+  # A review's severity can be promoted from "detection" to "alert" while it is
+  # in progress, so the current ("after") state is authoritative.
+  def severity
+    @json.dig('after', 'severity') || @json.dig('before', 'severity')
+  end
+
   def end_alert?
-    @json['type'] == 'end' &&
-    @json.dig('before', 'severity') == 'alert'
+    @json['type'] == 'end' && severity == 'alert'
   end
 
   def internal_id

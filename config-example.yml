@@ -9,11 +9,17 @@ mqtt:
 frigate:
   url: "http://192.168.0.10:5000"
   api_key: null
+  # Only needed when using the authenticated port (8971) instead of 5000:
+  # user: "echo"
+  # password: "<password>"
+  # verify_ssl: false   # 8971 uses a self-signed certificate by default
 
 # Optional: Prevents exports when home. Remove section to disable.
 home_assistant:
   url: "http://192.168.0.10:8123"
   token: "<long-lived-access-token>"
+  # Optional: only check these entities instead of every person.* entity.
+  # entities: ["person.alice", "person.bob"]
 
 # Optional: Uploads exports via rsync. Remove section to disable.
 remote_backup:

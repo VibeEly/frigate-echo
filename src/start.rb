@@ -2,7 +2,6 @@ $stdout.sync = true
 
 require 'logger'
 require 'mqtt'
-require 'fileutils'
 require 'securerandom'
 
 require_relative 'home_assistant'
@@ -10,14 +9,16 @@ require_relative 'frigate'
 require_relative 'config'
 require_relative 'message'
 require_relative 'remote_backup'
+require_relative 'alert_worker'
+require_relative 'maintenance'
 
 CONFIG = Config.load('config/config.yml')
 
 FRIGATE_EXPORTS = '/mnt/frigate_exports'
 ECHO_STORAGE    = '/mnt/echo_storage'
-REMOTE_PRUNE_INTERVAL = 24 * 60 * 60 # only prune the remote backup once per day
-EXPORT_WAIT_TIMEOUT   = 2 * 60      # give up waiting on a Frigate export after 2 minutes
-EXPORT_METADATA_WAIT_TIMEOUT = 30    # give up waiting on Frigate to report a video_path after 30 seconds
+EXPORT_BUFFER   = 5                 # seconds of footage added before and after the alert
+EXPORT_WAIT_TIMEOUT = 10 * 60       # give up waiting on a Frigate export after 10 minutes
+MQTT_RECONNECT_MAX_DELAY = 60       # seconds
 
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
@@ -34,11 +35,25 @@ end
 require_config!(CONFIG[:mqtt] || {}, :server, :topic)
 require_config!(CONFIG[:frigate] || {}, :url)
 
-frigate = FrigateExport.new(CONFIG[:frigate][:url], CONFIG[:frigate][:api_key])
+frigate_config = CONFIG[:frigate]
+require_config!(frigate_config, :password) if frigate_config[:user]
+
+frigate = FrigateExport.new(
+	frigate_config[:url],
+	frigate_config[:api_key],
+	user: frigate_config[:user],
+	password: frigate_config[:password],
+	verify_ssl: frigate_config.fetch(:verify_ssl, true),
+	cookie_name: frigate_config[:cookie_name] || 'frigate_token'
+)
 
 if CONFIG[:home_assistant]
 	require_config!(CONFIG[:home_assistant], :url, :token)
-	home_assistant = HomeAssistant.new(CONFIG[:home_assistant][:url], CONFIG[:home_assistant][:token])
+	home_assistant = HomeAssistant.new(
+		CONFIG[:home_assistant][:url],
+		CONFIG[:home_assistant][:token],
+		entities: CONFIG[:home_assistant][:entities]
+	)
 else
 	home_assistant = nil
 end
@@ -61,170 +76,114 @@ else
 	remote_backup = nil
 end
 
-last_remote_prune_at = nil
-
-# Get Frigate video path via GET /api/exports/:id
-# Poll until it reports a video_path. Set by EXPORT_METADATA_WAIT_TIMEOUT 
-def wait_for_video_path(frigate, id, timeout:, logger:, internal_id:)
-	deadline = Time.now + timeout
-
-	loop do
-		export = frigate.get(id)
-		return export['video_path'] if export && export['video_path']
-
-		if Time.now > deadline
-			logger.warn("#{internal_id} Timed out waiting for Frigate to report a video_path for export #{id}")
-			return nil
-		end
-
-		sleep 1
-	end
+# Optional retention. Must be a whole number of days >= 1; a value of 0 would
+# otherwise delete every clip as soon as it is stored.
+retention_days = CONFIG[:retention_days]
+unless retention_days.nil?
+	retention_days = Integer(retention_days)
+	raise "retention_days must be at least 1 (remove the key to disable retention)" if retention_days < 1
 end
 
-# Waits for Frigate to finish writing the export file, by polling its size
-# until it stops changing. Set by EXPORT_WAIT_TIMEOUT 
-def wait_for_export(filepath, timeout:, logger:, internal_id:)
-	last_size = -1
-	deadline = Time.now + timeout
+worker = AlertWorker.new(
+	frigate: frigate,
+	exports_dir: FRIGATE_EXPORTS,
+	storage_dir: ECHO_STORAGE,
+	remote_backup: remote_backup,
+	logger: logger,
+	export_timeout: EXPORT_WAIT_TIMEOUT
+).start
 
-	loop do
-		if File.exist?(filepath)
-			current_size = File.size(filepath)
-			return true if current_size == last_size
-			last_size = current_size
+Maintenance.new(
+	storage_dir: ECHO_STORAGE,
+	remote_backup: remote_backup,
+	retention_days: retention_days,
+	logger: logger
+).start
+
+# Handles one MQTT message. Kept quick: the slow work happens on the worker thread.
+handle_message = lambda do |message_str|
+	begin
+		message = Message.new(message_str)
+
+		# Is it a concluded alert message?
+		next unless message.end_alert?
+
+		id = message.internal_id
+
+		logger.info("#{id} Alert received on camera \"#{message.camera_name}\"")
+
+		if message.camera_name.to_s.empty? || message.start_time.nil?
+			logger.warn("#{id} Skipping alert; message has no camera or start_time.")
+			next
 		end
 
-		if Time.now > deadline
-			logger.warn("#{internal_id} Timed out waiting for Frigate export file: #{filepath}")
-			return false
-		end
-
-		sleep 1
-	end
-end
-
-# connect to MQTT
-
-begin
-	logger.info("Connecting to MQTT at #{CONFIG[:mqtt][:server]}")
-
-	mqtt_options = {
-		host: CONFIG[:mqtt][:server],
-		client_id: "frigate-echo-#{SecureRandom.hex(4)}"
-	}
-	# Only send credentials if they were actually configured, rather than
-	# passing empty strings to the broker.
-	mqtt_options[:username] = CONFIG[:mqtt][:username] unless CONFIG[:mqtt][:username].to_s.empty?
-	mqtt_options[:password] = CONFIG[:mqtt][:password] unless CONFIG[:mqtt][:password].to_s.empty?
-
-	MQTT::Client.connect(mqtt_options) do |client|
-		logger.info("Connected. Listening to topic #{CONFIG[:mqtt][:topic]}")
-
-		client.get(CONFIG[:mqtt][:topic]) do |topic, message_str|
+		# Is anyone home? If Home Assistant cannot be reached, export anyway:
+		# a missing backup is worse than an unneeded one.
+		if home_assistant
 			begin
-				message = Message.new(message_str)
-
-				# Is it a concluded alert message?
-				next unless message.end_alert?
-
-				logger.info("#{message.internal_id} Alert received on camera \"#{message.camera_name}\"")
-
-				# Is anyone home?
-				if home_assistant
-					people_home = home_assistant.people_home
-					unless people_home.empty?
-						logger.info("#{message.internal_id} Ignoring alert. The following people are home: #{people_home.join(', ')}.")
-						next
-					end
-				end
-
-				# Export the video
-				buffer      = 5
-				start_time  = message.start_time - buffer
-				end_time    = message.end_time   + buffer
-
-				res = frigate.create(message.camera_name, start_time, end_time)
-
-				# Move the file
-				id = res['export_id']
-
-				logger.info "#{message.internal_id} Frigate export id: #{id}"
-
-				# Ask Frigate for the export's filename 
-				video_path = wait_for_video_path(frigate, id, timeout: EXPORT_METADATA_WAIT_TIMEOUT, logger: logger, internal_id: message.internal_id)
-
-				if video_path.nil?
-					logger.warn("#{message.internal_id} Skipping this alert; no video_path reported for export #{id}.")
+				people_home = home_assistant.people_home
+				unless people_home.empty?
+					logger.info("#{id} Ignoring alert. The following people are home: #{people_home.join(', ')}.")
 					next
 				end
-
-				filename = File.basename(video_path)
-				filepath = File.join(FRIGATE_EXPORTS, filename)
-
-				unless wait_for_export(filepath, timeout: EXPORT_WAIT_TIMEOUT, logger: logger, internal_id: message.internal_id)
-					logger.warn("#{message.internal_id} Skipping this alert; export never completed.")
-					next
-				end
-
-				logger.info "#{message.internal_id} Frigate export complete."
-
-				human_time = Time.at(start_time).localtime.strftime("%Y%m%d%H%M%S")
-				stored_path = File.join(ECHO_STORAGE, "#{human_time}-#{filename}")
-
-				# Copy to local echo storage
-				FileUtils.mv(filepath, stored_path)
-
-				logger.info "#{message.internal_id} File moved to Echo storage."
-
-				# Ship a copy offsite over rsync/SSH 
-				if remote_backup
-					begin
-						remote_backup.upload(stored_path)
-						logger.info "#{message.internal_id} File backed up to remote server."
-					rescue StandardError => e
-						logger.warn "#{message.internal_id} Remote backup failed: #{e.message.lines.first.to_s.strip}"
-					end
-				end
-
-				# Delete export in Frigate after clip is already in Echo storage,
-				begin
-					frigate.delete(id)
-					logger.info "#{message.internal_id} Export deleted from Frigate."
-				rescue StandardError => e
-					logger.warn "#{message.internal_id} Could not delete export #{id} from Frigate (clip already archived): #{e.message.lines.first.to_s.strip}"
-				end
-
-				# Trim exports folder
-				if CONFIG[:retention_days]
-					logger.info "Removing expired data from Echo storage."
-
-					cutoff = Time.now - (CONFIG[:retention_days].to_i * 24 * 60 * 60)
-					Dir.glob(File.join(ECHO_STORAGE, '*')).each do |path|
-						next unless File.file?(path)
-						File.delete(path) if File.mtime(path) < cutoff
-					end
-
-					# Trim the remote backup directory files
-					if remote_backup && (last_remote_prune_at.nil? || Time.now - last_remote_prune_at >= REMOTE_PRUNE_INTERVAL)
-						last_remote_prune_at = Time.now
-
-						begin
-							remote_backup.prune(CONFIG[:retention_days])
-							logger.info "Removed expired data from remote backup."
-						rescue StandardError => e
-							logger.warn "Could not prune remote backup: #{e.message.lines.first.to_s.strip}"
-						end
-					end
-				end
-			rescue Message::ParseError => e
-				logger.warn("Skipping unparseable MQTT message: #{e.message}")
 			rescue StandardError => e
-				# Log Errors and keep processing subsequent MQTT messages.
-				logger.error("Error while processing alert: #{e.class}: #{e.message}")
-				logger.error(e.backtrace.first(5).join("\n")) if e.backtrace
+				logger.warn("#{id} Could not check Home Assistant, exporting anyway: #{e.message.lines.first.to_s.strip}")
 			end
 		end
+
+		worker.enqueue(ExportJob.new(
+			internal_id: id,
+			camera: message.camera_name,
+			start_time: message.start_time - EXPORT_BUFFER,
+			end_time: (message.end_time || Time.now.to_f) + EXPORT_BUFFER
+		))
+
+		logger.info("#{id} Export queued.")
+	rescue Message::ParseError => e
+		logger.warn("Skipping unparseable MQTT message: #{e.message}")
+	rescue StandardError => e
+		# Log Errors and keep processing subsequent MQTT messages.
+		logger.error("Error while processing alert: #{e.class}: #{e.message}")
+		logger.error(e.backtrace.first(5).join("\n")) if e.backtrace
+	end
+end
+
+# Connect to MQTT, reconnecting with backoff if the broker goes away.
+begin
+	reconnect_delay = 1
+
+	loop do
+		begin
+			logger.info("Connecting to MQTT at #{CONFIG[:mqtt][:server]}")
+
+			mqtt_options = {
+				host: CONFIG[:mqtt][:server],
+				client_id: "frigate-echo-#{SecureRandom.hex(4)}"
+			}
+			# Only send credentials if they were actually configured, rather than
+			# passing empty strings to the broker.
+			mqtt_options[:username] = CONFIG[:mqtt][:username] unless CONFIG[:mqtt][:username].to_s.empty?
+			mqtt_options[:password] = CONFIG[:mqtt][:password] unless CONFIG[:mqtt][:password].to_s.empty?
+
+			MQTT::Client.connect(mqtt_options) do |client|
+				logger.info("Connected. Listening to topic #{CONFIG[:mqtt][:topic]}")
+				reconnect_delay = 1
+
+				client.get(CONFIG[:mqtt][:topic]) do |_topic, message_str|
+					handle_message.call(message_str)
+				end
+			end
+
+			logger.warn("MQTT connection closed.")
+		rescue StandardError, MQTT::Exception => e
+			# MQTT::Exception does not inherit from StandardError.
+			logger.warn("MQTT connection lost: #{e.class}: #{e.message}")
+		end
+
+		logger.info("Reconnecting to MQTT in #{reconnect_delay}s")
+		sleep reconnect_delay
+		reconnect_delay = [reconnect_delay * 2, MQTT_RECONNECT_MAX_DELAY].min
 	end
 rescue Interrupt
-  logger.info("\nExiting...")
+	logger.info("\nExiting...")
 end
