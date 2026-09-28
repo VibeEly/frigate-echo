@@ -53,7 +53,8 @@ if CONFIG[:remote_backup]
 		port: rb_config[:port] || 22,
 		identity_file: rb_config[:identity_file],
 		known_hosts_file: rb_config[:known_hosts_file],
-		strict_host_key_checking: rb_config.fetch(:strict_host_key_checking, true)
+		strict_host_key_checking: rb_config.fetch(:strict_host_key_checking, true),
+		bandwidth_limit: rb_config[:bandwidth_limit] || 0
 	)
 	logger.info("Remote backup enabled: #{rb_config[:user]}@#{rb_config[:host]}:#{rb_config[:path]}")
 else
