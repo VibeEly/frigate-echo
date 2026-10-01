@@ -3,6 +3,7 @@ $stdout.sync = true
 require 'logger'
 require 'mqtt'
 require 'securerandom'
+require 'fileutils'
 
 require_relative 'home_assistant'
 require_relative 'frigate'
@@ -22,6 +23,41 @@ MQTT_RECONNECT_MAX_DELAY = 60       # seconds
 
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
+
+# While the MQTT connection is up, a heartbeat file is touched every few
+# seconds; the Dockerfile HEALTHCHECK looks at that file's age. If MQTT stays
+# down for MQTT_DOWN_EXIT_AFTER seconds, the process exits so Docker's restart
+# policy (restart: unless-stopped) brings the container back up.
+HEALTH_FILE           = '/tmp/healthy'
+HEARTBEAT_INTERVAL    = 15          # seconds
+MQTT_DOWN_EXIT_AFTER  = 5 * 60      # seconds
+
+# Ignore a stale file left by docker restart
+File.delete(HEALTH_FILE) if File.exist?(HEALTH_FILE) 
+
+# nil while connected; otherwise the time the connection was lost (or startup).
+mqtt_down_since = Time.now
+
+Thread.new do
+	loop do
+		begin
+			down_since = mqtt_down_since
+
+			if down_since.nil?
+				FileUtils.touch(HEALTH_FILE)
+			elsif Time.now - down_since >= MQTT_DOWN_EXIT_AFTER
+				logger.error("MQTT has been down for #{MQTT_DOWN_EXIT_AFTER}s. Exiting so Docker can restart the container.")
+				exit!(1)
+			end
+		rescue StandardError => e
+			logger.warn("Heartbeat error: #{e.class}: #{e.message}")
+		end
+
+		sleep HEARTBEAT_INTERVAL
+	end
+end
+
+
 
 # Check config for required values
 def require_config!(config, *keys)
@@ -168,15 +204,18 @@ begin
 			MQTT::Client.connect(mqtt_options) do |client|
 				logger.info("Connected. Listening to topic #{CONFIG[:mqtt][:topic]}")
 				reconnect_delay = 1
+				mqtt_down_since = nil
 
 				client.get(CONFIG[:mqtt][:topic]) do |_topic, message_str|
 					handle_message.call(message_str)
 				end
 			end
 
+			mqtt_down_since ||= Time.now
 			logger.warn("MQTT connection closed.")
 		rescue StandardError, MQTT::Exception => e
 			# MQTT::Exception does not inherit from StandardError.
+			mqtt_down_since ||= Time.now
 			logger.warn("MQTT connection lost: #{e.class}: #{e.message}")
 		end
 
