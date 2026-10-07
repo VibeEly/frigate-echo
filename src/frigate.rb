@@ -9,8 +9,7 @@ class FrigateExport
 	# * Port 5000 (unauthenticated): leave api_key, user and password unset.
 	# * Port 8971 (authenticated): set user + password. Echo logs in via
 	#   POST /api/login, keeps the returned JWT and logs in again when it expires.
-	# * api_key: a JWT you obtained yourself. It expires (24h by default), so
-	#   prefer user/password for anything long-running.
+	# * api_key :
 	def initialize(url, api_key = nil, user: nil, password: nil, verify_ssl: true, cookie_name: 'frigate_token')
 		@url         = url.to_s.chomp('/')
 		@token       = api_key

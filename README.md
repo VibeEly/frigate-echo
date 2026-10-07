@@ -70,11 +70,14 @@ mqtt:
 
 frigate:
   url: "http://192.168.0.10:5000"
+  api_key: null
+  export_start: 5
+  export_end: 5
   # Only needed when using the authenticated port (8971) instead of 5000:
   # user: "echo"
   # password: "<password>"
   # verify_ssl: false   # 8971 uses a self-signed certificate by default
-  api_key: null
+
 
 # Optional: Prevents exports when home. Remove section to disable.
 home_assistant:
@@ -95,12 +98,14 @@ remote_backup:
 
 A few notes:
 
+* `retention_days`: Optionally remove exports from the synced folder once they are the defined number of days old (0 or remove to keep exports forever). 
+
 * `frigate`: Echo needs Frigate 0.15 or newer (older versions do not return an export id) and is written against the 0.18 API.
     * Port `5000` is Frigate's internal, unauthenticated port. Leave `user`, `password` and `api_key` unset and keep that port reachable only from trusted networks.
     * Port `8971` is the authenticated port. Create a user in Frigate (Settings > Users) and set `user` and `password`. Echo logs in, keeps the token and logs in again when it expires. Frigate serves a self-signed certificate on this port by default, so set `verify_ssl: false` unless you have installed a real certificate.
     * `api_key` : Frigate API key.
-
-* `retention_days`: Optionally remove exports from the synced folder once they are the defined number of days old (whole days, at least 1). 
+    * `export_start` : Seconds to include before the detected event (defaults to `5`).
+    * `export_end` : Seconds to include after the detected event (defaults to `5`).
 
 * `home_assistant`: Optionally prevent exporting of alerts when home assistant shows that someone is home. If Home Assistant cannot be reached, Echo exports the alert anyway. The `token` sub-key can be generated from within the Home Assistant UI by clicking on your name in the lower left corner, selecting the security tab, and then scrolling to the "Long-lived access tokens" section. Comment out or remove this section to disable it.
 
@@ -112,7 +117,7 @@ A few notes:
     * **`identity_file`**: Path to a private SSH key used to authenticate. **Only key-based auth is supported** — Echo runs rsync in SSH "batch mode," so a server that requires a password will fail the connection. Generate a dedicated key pair for this (e.g. `ssh-keygen -t ed25519 -f id_rsync -N ""`), mount the private key into the container (alongside `config.yml` is fine), and add the public key to `~/.ssh/authorized_keys` for that user on the backup server. Keep the private key's permissions restrictive (`chmod 600`).
     * **`known_hosts_file`**: Optional path to a `known_hosts` file containing the backup server's host key. If omitted, the default SSH known_hosts lookup is used. The host must already be known/trusted before the first backup — SSH into the backup server manually once (or run `ssh-keyscan` into a known_hosts file) so its key gets recorded.
     * `strict_host_key_checking`: Defaults to `true` and should normally be left alone; it's what makes the `known_hosts` check above actually enforced. Only set to `false` if you understand and accept the risk of skipping host verification.
-    * `bandwidth_limit`: Optionally limit upload bandwidth to remote server in KB/s (defaults to unlimited `0`).
+    * `bandwidth_limit`: Optionally limit upload bandwidth to remote server in KB/s kilobytes per second (defaults to unlimited `0`).
 
 
 #### Syncthing notes

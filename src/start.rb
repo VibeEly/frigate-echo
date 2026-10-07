@@ -16,8 +16,7 @@ CONFIG = Config.load('config/config.yml')
 
 FRIGATE_EXPORTS = '/mnt/frigate_exports'
 ECHO_STORAGE    = '/mnt/echo_storage'
-EXPORT_BUFFER   = 5                 # seconds of footage added before and after the alert
-EXPORT_WAIT_TIMEOUT = 10 * 60       # give up waiting on a Frigate export after 10 minutes
+EXPORT_WAIT_TIMEOUT = 2 * 60       # give up waiting on a Frigate export after 2 minutes
 MQTT_RECONNECT_MAX_DELAY = 60       # seconds
 
 logger = Logger.new(STDOUT)
@@ -37,6 +36,8 @@ require_config!(CONFIG[:frigate] || {}, :url)
 
 frigate_config = CONFIG[:frigate]
 require_config!(frigate_config, :password) if frigate_config[:user]
+frigate_config[:export_start] ||= 5
+frigate_config[:export_end] ||= 5
 
 frigate = FrigateExport.new(
 	frigate_config[:url],
@@ -76,13 +77,10 @@ else
 	remote_backup = nil
 end
 
-# Optional retention. Must be a whole number of days >= 1; a value of 0 would
-# otherwise delete every clip as soon as it is stored.
-retention_days = CONFIG[:retention_days]
-unless retention_days.nil?
-	retention_days = Integer(retention_days)
-	raise "retention_days must be at least 1 (remove the key to disable retention)" if retention_days < 1
-end
+# Optional retention. Must be a whole number of days. 
+# If 0 all clips are retained and nothing deleted.
+retention_days = CONFIG[:retention_days].to_i.nonzero?
+
 
 worker = AlertWorker.new(
 	frigate: frigate,
@@ -100,7 +98,7 @@ Maintenance.new(
 	logger: logger
 ).start
 
-# Handles one MQTT message. Kept quick: the slow work happens on the worker thread.
+# Handles one MQTT message. 
 handle_message = lambda do |message_str|
 	begin
 		message = Message.new(message_str)
@@ -117,8 +115,7 @@ handle_message = lambda do |message_str|
 			next
 		end
 
-		# Is anyone home? If Home Assistant cannot be reached, export anyway:
-		# a missing backup is worse than an unneeded one.
+		# Is anyone home? If Home Assistant cannot be reached, still export backup
 		if home_assistant
 			begin
 				people_home = home_assistant.people_home
@@ -134,8 +131,8 @@ handle_message = lambda do |message_str|
 		worker.enqueue(ExportJob.new(
 			internal_id: id,
 			camera: message.camera_name,
-			start_time: message.start_time - EXPORT_BUFFER,
-			end_time: (message.end_time || Time.now.to_f) + EXPORT_BUFFER
+			start_time: message.start_time - frigate_config[:export_start],
+			end_time: (message.end_time || Time.now.to_f) + frigate_config[:export_end]
 		))
 
 		logger.info("#{id} Export queued.")

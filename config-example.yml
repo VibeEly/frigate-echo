@@ -9,6 +9,8 @@ mqtt:
 frigate:
   url: "http://192.168.0.10:5000"
   api_key: null
+  export_start: 5
+  export_end: 5
   # Only needed when using the authenticated port (8971) instead of 5000:
   # user: "echo"
   # password: "<password>"
